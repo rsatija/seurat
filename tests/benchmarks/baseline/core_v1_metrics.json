@@ -1,0 +1,90 @@
+{
+  "schema_version": "core_v1",
+  "generated_at_utc": "2026-02-22 22:17:59 UTC",
+  "environment": {
+    "r_version": "4.3.2",
+    "platform": "aarch64-apple-darwin20",
+    "seurat": "5.0.1",
+    "seurat_object": "5.0.2"
+  },
+  "protocol": {
+    "warmup_runs": 1,
+    "measured_runs": 7,
+    "threshold": 0.05,
+    "metrics": ["median_elapsed_sec", "median_allocated_bytes"]
+  },
+  "metrics": [
+    {
+      "scenario_id": "bench_scale_data",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.014, 0.015, 0.015, 0.016, 0.015, 0.018, 0.014],
+      "allocated_bytes": [1474944, 1474944, 1474944, 1474944, 1474944, 1474944, 1474944],
+      "median_elapsed_sec": 0.015,
+      "median_allocated_bytes": 1474944
+    },
+    {
+      "scenario_id": "bench_run_pca",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.02, 0.021, 0.021, 0.028, 0.029, 0.027, 0.02],
+      "allocated_bytes": [1986896, 1986896, 1986896, 1986896, 1986896, 1986896, 1986896],
+      "median_elapsed_sec": 0.021,
+      "median_allocated_bytes": 1986896
+    },
+    {
+      "scenario_id": "bench_run_umap",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.972, 0.654, 0.924, 0.61, 0.627, 0.559, 0.542],
+      "allocated_bytes": [2885632, 2885632, 2885632, 2885632, 2885632, 2885632, 2885632],
+      "median_elapsed_sec": 0.627,
+      "median_allocated_bytes": 2885632
+    },
+    {
+      "scenario_id": "bench_find_neighbors",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.029, 0.03, 0.028, 0.029, 0.029, 0.029, 0.029],
+      "allocated_bytes": [1098768, 1098768, 1098768, 1098768, 1098768, 1098768, 1098768],
+      "median_elapsed_sec": 0.029,
+      "median_allocated_bytes": 1098768
+    },
+    {
+      "scenario_id": "bench_find_clusters",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.013, 0.012, 0.013, 0.013, 0.014, 0.014, 0.013],
+      "allocated_bytes": [856968, 856968, 856968, 856968, 856968, 856968, 856968],
+      "median_elapsed_sec": 0.013,
+      "median_allocated_bytes": 856968
+    },
+    {
+      "scenario_id": "bench_find_transfer_anchors",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [1.113, 0.563, 0.598, 0.541, 0.593, 0.581, 0.651],
+      "allocated_bytes": [42264544, 42264544, 42264544, 42264544, 42264544, 42264544, 42264544],
+      "median_elapsed_sec": 0.593,
+      "median_allocated_bytes": 42264544
+    },
+    {
+      "scenario_id": "bench_integrate_data",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.739, 0.677, 0.68, 0.672, 0.76, 0.833, 0.704],
+      "allocated_bytes": [48382080, 48377720, 48377720, 48377720, 48377720, 48377720, 48377720],
+      "median_elapsed_sec": 0.704,
+      "median_allocated_bytes": 48377720
+    },
+    {
+      "scenario_id": "bench_transfer_data",
+      "warmup_runs": 1,
+      "measured_runs": 7,
+      "elapsed_sec": [0.027, 0.025, 0.025, 0.025, 0.026, 0.026, 0.025],
+      "allocated_bytes": [1273352, 1273352, 1273352, 1273352, 1273352, 1273352, 1273352],
+      "median_elapsed_sec": 0.025,
+      "median_allocated_bytes": 1273352
+    }
+  ]
+}

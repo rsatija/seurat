@@ -1,0 +1,111 @@
+{
+  "schema_version": "core_v1",
+  "generated_at_utc": "2026-02-22 22:17:10 UTC",
+  "generator": {
+    "r_version": "4.3.2",
+    "seurat": "5.0.1",
+    "seurat_object": "5.0.2"
+  },
+  "scenarios": [
+    {
+      "scenario_id": "core_preprocess_log",
+      "file": "core_preprocess_log.rds",
+      "md5": "543d960e50275a62289cdaf28479d754",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    },
+    {
+      "scenario_id": "core_preprocess_clr_rc",
+      "file": "core_preprocess_clr_rc.rds",
+      "md5": "2ccd0ca541c2382c82d1c2e8021e48a1",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    },
+    {
+      "scenario_id": "core_pca_umap_neighbors_clusters",
+      "file": "core_pca_umap_neighbors_clusters.rds",
+      "md5": "75bff866f8496411acb38ae83621cf7b",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-05
+      }
+    },
+    {
+      "scenario_id": "core_sctransform_v1",
+      "file": "core_sctransform_v1.rds",
+      "md5": "45c43ae079b599c464b4301ccc5905a8",
+      "seed": 1448145,
+      "rng_version": "3.5.0",
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    },
+    {
+      "scenario_id": "core_transfer_anchors_default",
+      "file": "core_transfer_anchors_default.rds",
+      "md5": "195fc3ee28e67c23adc55cd25f4fd421",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-07
+      }
+    },
+    {
+      "scenario_id": "core_integrate_anchors_twoobj",
+      "file": "core_integrate_anchors_twoobj.rds",
+      "md5": "28a0ebd40936805b2cad7786a214a0b6",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-07
+      }
+    },
+    {
+      "scenario_id": "core_integrate_data_twoobj",
+      "file": "core_integrate_data_twoobj.rds",
+      "md5": "2ed24beb43c4de067bd335fb248bda70",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    },
+    {
+      "scenario_id": "core_integrate_data_threeobj",
+      "file": "core_integrate_data_threeobj.rds",
+      "md5": "0c46793c6252246607efb58acfae30ad",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    },
+    {
+      "scenario_id": "core_transfer_data_default",
+      "file": "core_transfer_data_default.rds",
+      "md5": "881c01e5367cf831778d9305e5c5ff1f",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    },
+    {
+      "scenario_id": "core_mapquery_default",
+      "file": "core_mapquery_default.rds",
+      "md5": "d0e580c0237a9d9fca9611f769d76a2f",
+      "seed": 42,
+      "rng_version": null,
+      "tolerance": {
+        "numeric": 1e-06
+      }
+    }
+  ]
+}
