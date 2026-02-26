@@ -4176,6 +4176,62 @@ FindVariableFeatures.V3Matrix <- function(
   verbose = TRUE,
   ...
 ) {
+  # Dispatch to legacy/rewrite implementation so behavior can be benchmarked and
+  # reproduced exactly while migration proceeds in small steps.
+  impl <- getOption(x = 'Seurat.FindVariableFeatures.V3Matrix.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = FindVariableFeatures.V3Matrix_legacy(
+      object = object,
+      selection.method = selection.method,
+      loess.span = loess.span,
+      clip.max = clip.max,
+      mean.function = mean.function,
+      dispersion.function = dispersion.function,
+      num.bin = num.bin,
+      binning.method = binning.method,
+      verbose = verbose,
+      ...
+    ),
+    'rewrite' = FindVariableFeatures.V3Matrix_rewrite(
+      object = object,
+      selection.method = selection.method,
+      loess.span = loess.span,
+      clip.max = clip.max,
+      mean.function = mean.function,
+      dispersion.function = dispersion.function,
+      num.bin = num.bin,
+      binning.method = binning.method,
+      verbose = verbose,
+      ...
+    )
+  )
+}
+
+#' Legacy V3Matrix helper for FindVariableFeatures.
+#'
+#' Keeps existing behavior and method dispatch intact.
+#' @keywords internal
+#' @noRd
+FindVariableFeatures.V3Matrix_legacy <- function(
+  object,
+  selection.method = "vst",
+  loess.span = 0.3,
+  clip.max = 'auto',
+  mean.function = FastExpMean,
+  dispersion.function = FastLogVMR,
+  num.bin = 20,
+  binning.method = "equal_width",
+  verbose = TRUE,
+  ...
+) {
+  # Legacy branch preserves historical behavior and data flow: compute mean/disp
+  # values, transform dispersion per selected binning method, and return the full
+  # per-feature statistics frame.
   CheckDots(...)
   if (!inherits(x = object, 'Matrix')) {
     object <- as(object = as.matrix(x = object), Class = 'Matrix')
@@ -4203,6 +4259,100 @@ FindVariableFeatures.V3Matrix <- function(
     )
     hvf.info$variance.expected[not.const] <- 10 ^ fit$fitted
     # use c function to get variance after feature standardization
+    hvf.info$variance.standardized <- SparseRowVarStd(
+      mat = object,
+      mu = hvf.info$mean,
+      sd = sqrt(hvf.info$variance.expected),
+      vmax = clip.max,
+      display_progress = verbose
+    )
+    colnames(x = hvf.info) <- paste0('vst.', colnames(x = hvf.info))
+  } else {
+    if (!inherits(x = mean.function, what = 'function')) {
+      stop("'mean.function' must be a function")
+    }
+    if (!inherits(x = dispersion.function, what = 'function')) {
+      stop("'dispersion.function' must be a function")
+    }
+    feature.mean <- mean.function(object, verbose)
+    feature.dispersion <- dispersion.function(object, verbose)
+    names(x = feature.mean) <- names(x = feature.dispersion) <- rownames(x = object)
+    feature.dispersion[is.na(x = feature.dispersion)] <- 0
+    feature.mean[is.na(x = feature.mean)] <- 0
+    data.x.breaks <- switch(
+      EXPR = binning.method,
+      'equal_width' = num.bin,
+      'equal_frequency' = c(
+        -1,
+        quantile(
+          x = feature.mean[feature.mean > 0],
+          probs = seq.int(from = 0, to = 1, length.out = num.bin)
+        )
+      ),
+      stop("Unknown binning method: ", binning.method)
+    )
+    data.x.bin <- cut(x = feature.mean, breaks = data.x.breaks)
+    names(x = data.x.bin) <- names(x = feature.mean)
+    mean.y <- tapply(X = feature.dispersion, INDEX = data.x.bin, FUN = mean)
+    sd.y <- tapply(X = feature.dispersion, INDEX = data.x.bin, FUN = sd)
+    feature.dispersion.scaled <- (feature.dispersion - mean.y[as.numeric(x = data.x.bin)]) /
+      sd.y[as.numeric(x = data.x.bin)]
+    names(x = feature.dispersion.scaled) <- names(x = feature.mean)
+    hvf.info <- data.frame(feature.mean, feature.dispersion, feature.dispersion.scaled)
+    rownames(x = hvf.info) <- rownames(x = object)
+    colnames(x = hvf.info) <- paste0('mvp.', c('mean', 'dispersion', 'dispersion.scaled'))
+  }
+  return(hvf.info)
+}
+
+#' Rewritten V3Matrix helper for FindVariableFeatures.
+#'
+#' Uses fused native mean/variance calculation in the vst branch.
+#' @keywords internal
+#' @noRd
+FindVariableFeatures.V3Matrix_rewrite <- function(
+  object,
+  selection.method = "vst",
+  loess.span = 0.3,
+  clip.max = 'auto',
+  mean.function = FastExpMean,
+  dispersion.function = FastLogVMR,
+  num.bin = 20,
+  binning.method = "equal_width",
+  verbose = TRUE,
+  ...
+) {
+  # Rewrite branch reuses the same API/outputs as legacy, but uses sparse-row
+  # fused stats (`SparseRowStats` / `SparseRowVarStd`) to reduce overhead for
+  # V3Matrix/vst while keeping output schema unchanged.
+  CheckDots(...)
+  if (!inherits(x = object, 'Matrix')) {
+    object <- as(object = as.matrix(x = object), Class = 'Matrix')
+  }
+  if (!inherits(x = object, what = 'dgCMatrix')) {
+    object <- as.sparse(x = object)
+  }
+  if (selection.method == "vst") {
+    if (clip.max == 'auto') {
+      clip.max <- sqrt(x = ncol(x = object))
+    }
+    vst.stats <- SparseRowStats(
+      mat = object,
+      display_progress = verbose
+    )
+    hvf.info <- data.frame(mean = vst.stats$mean, variance = vst.stats$variance)
+    if (!is.null(x = rownames(x = object)) && length(x = rownames(x = object)) == nrow(x = object)) {
+      rownames(x = hvf.info) <- rownames(x = object)
+    }
+    hvf.info$variance.expected <- 0
+    hvf.info$variance.standardized <- 0
+    not.const <- hvf.info$variance > 0
+    fit <- loess(
+      formula = log10(x = variance) ~ log10(x = mean),
+      data = hvf.info[not.const, ],
+      span = loess.span
+    )
+    hvf.info$variance.expected[not.const] <- 10 ^ fit$fitted
     hvf.info$variance.standardized <- SparseRowVarStd(
       mat = object,
       mu = hvf.info$mean,
@@ -4279,6 +4429,73 @@ FindVariableFeatures.Assay <- function(
   verbose = TRUE,
   ...
 ) {
+  # Dispatch layer: legacy keeps original behavior for safety, rewrite enables
+  # speed-focused refactor paths under the same user-facing signature.
+  impl <- getOption(x = 'Seurat.FindVariableFeatures.Assay.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = FindVariableFeatures.Assay_legacy(
+      object = object,
+      selection.method = selection.method,
+      loess.span = loess.span,
+      clip.max = clip.max,
+      mean.function = mean.function,
+      dispersion.function = dispersion.function,
+      num.bin = num.bin,
+      binning.method = binning.method,
+      nfeatures = nfeatures,
+      mean.cutoff = mean.cutoff,
+      dispersion.cutoff = dispersion.cutoff,
+      verbose = verbose,
+      ...
+    ),
+    'rewrite' = FindVariableFeatures.Assay_rewrite(
+      object = object,
+      selection.method = selection.method,
+      loess.span = loess.span,
+      clip.max = clip.max,
+      mean.function = mean.function,
+      dispersion.function = dispersion.function,
+      num.bin = num.bin,
+      binning.method = binning.method,
+      nfeatures = nfeatures,
+      mean.cutoff = mean.cutoff,
+      dispersion.cutoff = dispersion.cutoff,
+      verbose = verbose,
+      ...
+    )
+  )
+}
+
+#' Legacy assay wrapper for FindVariableFeatures.
+#'
+#' Keeps legacy behavior and full ranking/filtering path.
+#' @keywords internal
+#' @noRd
+FindVariableFeatures.Assay_legacy <- function(
+  object,
+  selection.method = "vst",
+  loess.span = 0.3,
+  clip.max = 'auto',
+  mean.function = FastExpMean,
+  dispersion.function = FastLogVMR,
+  num.bin = 20,
+  binning.method = "equal_width",
+  nfeatures = 2000,
+  mean.cutoff = c(0.1, 8),
+  dispersion.cutoff = c(1, Inf),
+  verbose = TRUE,
+  ...
+) {
+  # Legacy assay flow:
+  # 1) pull assay layer (`counts` for vst, otherwise `data`),
+  # 2) compute hvf.info via FindVariableFeatures,
+  # 3) filter/sort depending on method,
+  # 4) write `VariableFeatures` and `<method>.variable` assay flag vectors.
   if (length(x = mean.cutoff) != 2 || length(x = dispersion.cutoff) != 2) {
     stop("Both 'mean.cutoff' and 'dispersion.cutoff' must be two numbers")
   }
@@ -4326,6 +4543,94 @@ FindVariableFeatures.Assay <- function(
     },
     'dispersion' = head(x = rownames(x = hvf.info), n = nfeatures),
     'vst' = head(x = rownames(x = hvf.info), n = nfeatures),
+    stop("Unkown selection method: ", selection.method)
+  )
+  VariableFeatures(object = object) <- top.features
+  vf.name <- ifelse(
+    test = selection.method == 'vst',
+    yes = 'vst',
+    no = 'mvp'
+  )
+  vf.name <- paste0(vf.name, '.variable')
+  object[[vf.name]] <- rownames(x = object[[]]) %in% top.features
+  return(object)
+}
+
+#' Rewrite assay wrapper for FindVariableFeatures.
+#'
+#' Uses a native partial sort path for vst selection.
+#' @keywords internal
+#' @noRd
+FindVariableFeatures.Assay_rewrite <- function(
+  object,
+  selection.method = "vst",
+  loess.span = 0.3,
+  clip.max = 'auto',
+  mean.function = FastExpMean,
+  dispersion.function = FastLogVMR,
+  num.bin = 20,
+  binning.method = "equal_width",
+  nfeatures = 2000,
+  mean.cutoff = c(0.1, 8),
+  dispersion.cutoff = c(1, Inf),
+  verbose = TRUE,
+  ...
+) {
+  # Rewrite assay flow mirrors legacy outputs (`hvf.info`, `VariableFeatures`,
+  # `<method>.variable`) while reducing ranking overhead for vst by using
+  # top-k selection (`.TopKIndices`) on the already-computed score vector.
+  if (length(x = mean.cutoff) != 2 || length(x = dispersion.cutoff) != 2) {
+    stop("Both 'mean.cutoff' and 'dispersion.cutoff' must be two numbers")
+  }
+  if (selection.method == "vst") {
+    data <- GetAssayData(object = object, slot = "counts")
+    if (IsMatrixEmpty(x = data)) {
+      warning("selection.method set to 'vst' but count slot is empty; will use data slot instead")
+      data <- GetAssayData(object = object, slot = "data")
+    }
+  } else {
+    data <- GetAssayData(object = object, slot = "data")
+  }
+  hvf.info <- FindVariableFeatures(
+    object = data,
+    selection.method = selection.method,
+    loess.span = loess.span,
+    clip.max = clip.max,
+    mean.function = mean.function,
+    dispersion.function = dispersion.function,
+    num.bin = num.bin,
+    binning.method = binning.method,
+    verbose = verbose,
+    ...
+  )
+  object[[names(x = hvf.info)]] <- hvf.info
+  hvf.info <- hvf.info[which(x = hvf.info[, 1, drop = TRUE] != 0), ]
+  if (selection.method == "vst") {
+    # Fast path for vst: only the top `nfeatures` indices are required to set
+    # VariableFeatures, so we use fast top-k selection for exactness + speed.
+    vst.ranked <- .TopKIndices(
+      x = hvf.info$vst.variance.standardized,
+      k = nfeatures
+    )
+    top.features <- rownames(x = hvf.info)[vst.ranked]
+  } else {
+    hvf.info <- hvf.info[order(hvf.info$mvp.dispersion, decreasing = TRUE), , drop = FALSE]
+  }
+  selection.method <- switch(
+    EXPR = selection.method,
+    'mvp' = 'mean.var.plot',
+    'disp' = 'dispersion',
+    selection.method
+  )
+  top.features <- switch(
+    EXPR = selection.method,
+    'mean.var.plot' = {
+      means.use <- (hvf.info[, 1] > mean.cutoff[1]) & (hvf.info[, 1] < mean.cutoff[2])
+      dispersions.use <- (hvf.info[, 3] > dispersion.cutoff[1]) & (hvf.info[, 3] < dispersion.cutoff[2])
+      rownames(x = hvf.info)[which(x = means.use & dispersions.use)]
+    },
+    'dispersion' = head(x = rownames(x = hvf.info), n = nfeatures),
+    'vst' = top.features,
     stop("Unkown selection method: ", selection.method)
   )
   VariableFeatures(object = object) <- top.features

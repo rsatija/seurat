@@ -75,6 +75,57 @@ FindVariableFeatures.StdAssay <- function(
   selection.method = 'vst',
   ...
 ) {
+  impl <- getOption(x = 'Seurat.FindVariableFeatures.StdAssay.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = FindVariableFeatures.StdAssay_legacy(
+      object = object,
+      method = method,
+      nfeatures = nfeatures,
+      layer = layer,
+      span = span,
+      clip = clip,
+      key = key,
+      verbose = verbose,
+      selection.method = selection.method,
+      ...
+    ),
+    'rewrite' = FindVariableFeatures.StdAssay_rewrite(
+      object = object,
+      method = method,
+      nfeatures = nfeatures,
+      layer = layer,
+      span = span,
+      clip = clip,
+      key = key,
+      verbose = verbose,
+      selection.method = selection.method,
+      ...
+    )
+  )
+}
+
+#' Legacy path for FindVariableFeatures on StdAssay.
+#'
+#' Preserves existing metadata writes and warning behavior.
+#' @keywords internal
+#' @noRd
+FindVariableFeatures.StdAssay_legacy <- function(
+  object,
+  method = NULL,
+  nfeatures = 2000L,
+  layer = NULL,
+  span = 0.3,
+  clip = NULL,
+  key = NULL,
+  verbose = TRUE,
+  selection.method = 'vst',
+  ...
+) {
   if (selection.method == 'vst') {
     layer <- layer%||%'counts'
     method <- VST
@@ -165,6 +216,162 @@ FindVariableFeatures.StdAssay <- function(
     object[[names(x = hvf.info)]] <- hvf.info
   }
   VariableFeatures(object) <- VariableFeatures(object, nfeatures=nfeatures,method = key)
+  return(object)
+}
+
+#' Rewrite path for FindVariableFeatures on StdAssay.
+#'
+#' Removes redundant per-layer metadata clearing and only updates necessary
+#' layer outputs.
+#' @keywords internal
+#' @noRd
+FindVariableFeatures.StdAssay_rewrite <- function(
+  object,
+  method = NULL,
+  nfeatures = 2000L,
+  layer = NULL,
+  span = 0.3,
+  clip = NULL,
+  key = NULL,
+  verbose = TRUE,
+  selection.method = 'vst',
+  ...
+) {
+  if (selection.method == 'vst') {
+    layer <- layer%||%'counts'
+    method <- VST
+    key <- 'vst'
+  } else if (selection.method %in% c('mean.var.plot', 'mvp')) {
+    layer <- layer%||%'data'
+    method <- MVP
+    key <- 'mvp'
+  } else if (selection.method %in% c('dispersion', 'disp')) {
+    layer <- layer%||%'data'
+    method <- DISP
+    key <- 'disp'
+  } else if (is.null(x = method) || is.null(x = layer)) {
+    stop('Custome functions and layers are both required')
+  } else {
+    key <- NULL
+  }
+  layer <- Layers(object = object, search = layer)
+  if (is.null(x = key)) {
+    false <- function(...) {
+      return(FALSE)
+    }
+    key <- if (tryCatch(expr = is_quosure(x = method), error = false)) {
+      method
+    } else if (is.function(x = method)) {
+      substitute(expr = method)
+    } else if (is.call(x = enquo(arg = method))) {
+      enquo(arg = method)
+    } else if (is.character(x = method)) {
+      method
+    } else {
+      parse(text = method)
+    }
+    key <- .Abbrv(x = as_name(x = key))
+  }
+  warn.var <- warn.rank <- TRUE
+  for (i in seq_along(along.with = layer)) {
+    if (isTRUE(x = verbose)) {
+      message("Finding variable features for layer ", layer[i])
+    }
+    data <- LayerData(object = object, layer = layer[i], fast = TRUE)
+    hvf.function <- if (inherits(x = data, what = 'V3Matrix')) {
+      FindVariableFeatures.default
+    } else {
+      FindVariableFeatures
+    }
+    hvf.info <- hvf.function(
+      object = data,
+      method = method,
+      nfeatures = nfeatures,
+      span = span,
+      clip = clip,
+      verbose = verbose,
+      ...
+    )
+    if (warn.var) {
+      if (!'variable' %in% colnames(x = hvf.info) || !is.logical(x = hvf.info$variable)) {
+        warning(
+          "No variable feature indication in HVF info for method ",
+          key,
+          ", `VariableFeatures` will not work",
+          call = FALSE,
+          immediate. = TRUE
+        )
+        warn.var <- FALSE
+      }
+    } else if (warn.rank && !'rank' %in% colnames(x = hvf.info)) {
+      warning(
+        "No variable feature rank in HVF info for method ",
+        key,
+        ", `VariableFeatures` will return variable features in assay order",
+        call = FALSE,
+        immediate. = TRUE
+      )
+      warn.rank <- FALSE
+    }
+    colnames(x = hvf.info) <- paste(
+      'vf',
+      key,
+      layer[i],
+      colnames(x = hvf.info),
+      sep = '_'
+    )
+    rownames(x = hvf.info) <- Features(x = object, layer = layer[i])
+    object[["var.features"]] <- NULL
+    object[["var.features.rank"]] <- NULL
+  object[[names(x = hvf.info)]] <- hvf.info
+}
+
+#' Select top k indices by score with deterministic behavior and fast-paths.
+#'
+#' For large vectors this uses partial sorting when the threshold is unique (no
+#' ties across the cut), which avoids sorting the full vector.
+#' If ties are present at the cut boundary, it falls back to full ordering to
+#' preserve legacy selection semantics.
+#'
+#' @param x Numeric score vector.
+#' @param k Number of top entries to return.
+#' @param decreasing Sort direction, default is \code{TRUE}.
+#' @return Integer indices in descending score order for the top \code{k} entries.
+#' @keywords internal
+#' @noRd
+.TopKIndices <- function(x, k, decreasing = TRUE) {
+  n <- length(x = x)
+  if (isTRUE(all.equal(x = k, y = 0L)) || n == 0L) {
+    return(integer(0L))
+  }
+  k <- as.integer(max(0L, min(k, n)))
+  if (k == 0L) {
+    return(integer(0L))
+  }
+  finite <- is.finite(x = x)
+  finite_idx <- which(x = finite)
+  if (length(x = finite_idx) >= k && k < n) {
+    # Fast path: only the top-k boundary is needed, so avoid full ordering.
+    finite_scores <- x[finite_idx]
+    partial_idx <- sort.int(
+      x = finite_scores,
+      decreasing = decreasing,
+      index.return = TRUE,
+      partial = seq_len(length.out = k)
+    )$ix
+    top_idx <- finite_idx[partial_idx[seq_len(k)]]
+    kth_val <- x[top_idx[k]]
+    # If boundary ties exist, we cannot safely truncate by partial index.
+    # Fall back to total ordering so the final order matches historical behavior.
+    ties_at_boundary <- sum(finite & x == kth_val) > k - sum(finite & x > kth_val)
+    if (!isTRUE(all.equal(x = ties_at_boundary, y = FALSE))) {
+      return(order(x = x, decreasing = decreasing, na.last = TRUE, method = "radix")[seq_len(k)])
+    }
+    return(top_idx)
+  }
+  return(order(x = x, decreasing = decreasing, na.last = TRUE, method = "radix")[seq_len(k)])
+}
+  VariableFeatures(object) <- VariableFeatures(object, nfeatures = nfeatures, method = key)
   return(object)
 }
 
@@ -599,10 +806,21 @@ VST.IterableMatrix <- function(
   # Set variable features
   hvf.info$variable <- FALSE
   hvf.info$rank <- NA
-  vf <- head(
-    x = order(hvf.info$variance.standardized, decreasing = TRUE),
-    n = nselect
-  )
+  # Select variable features by score, using a fast top-k path when a small
+  # subset is requested and exact ordering fallback when needed.
+  vf <- if (nselect > 0L && nselect < nfeatures) {
+    # Fast partial top-k path for the common "small nselect" case.
+    .TopKIndices(x = hvf.info$variance.standardized, k = nselect)
+  } else if (nselect > 0L) {
+    # Fall back to full sort when all or most features are requested.
+    order(
+      x = hvf.info$variance.standardized,
+      decreasing = TRUE,
+      na.last = TRUE
+    )
+  } else {
+    integer(0L)
+  }
   hvf.info$variable[vf] <- TRUE
   hvf.info$rank[vf] <- seq_along(along.with = vf)
   rownames(x = hvf.info) <- rownames(x = data)
@@ -653,10 +871,21 @@ VST.dgCMatrix <- function(
   # Set variable features
   hvf.info$variable <- FALSE
   hvf.info$rank <- NA
-  vf <- head(
-    x = order(hvf.info$variance.standardized, decreasing = TRUE),
-    n = nselect
-  )
+  # Select variable features by score, using a fast top-k path when a small
+  # subset is requested and exact full ordering for broad selections.
+  vf <- if (nselect > 0L && nselect < nfeatures) {
+    # Fast partial top-k path for the common "small nselect" case.
+    .TopKIndices(x = hvf.info$variance.standardized, k = nselect)
+  } else if (nselect > 0L) {
+    # Fall back to full sort when all or most features are requested.
+    order(
+      x = hvf.info$variance.standardized,
+      decreasing = TRUE,
+      na.last = TRUE
+    )
+  } else {
+    integer(0L)
+  }
   hvf.info$variable[vf] <- TRUE
   hvf.info$rank[vf] <- seq_along(along.with = vf)
   return(hvf.info)
@@ -784,15 +1013,80 @@ DISP <- function(
   verbose = TRUE,
   ...
 ) {
+  impl <- getOption(x = 'Seurat.FindVariableFeatures.disp.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = DISP_legacy(
+      data = data,
+      nselect = nselect,
+      verbose = verbose,
+      ...
+    ),
+    'rewrite' = DISP_rewrite(
+      data = data,
+      nselect = nselect,
+      verbose = verbose,
+      ...
+    )
+  )
+}
+
+#' Legacy dispersion-based feature selector.
+#'
+#' Preserves prior feature ordering and ranking semantics for DISP.
+#'
+#' @keywords internal
+#' @noRd
+DISP_legacy <- function(
+  data,
+  nselect = 2000L,
+  verbose = TRUE,
+  ...
+) {
   hvf.info <- CalcDispersion(object = data, verbose = verbose, ...)
+  # Keep all features and keep only the top `nselect` dispersion scores marked
+  # as variable. Rank and flag arrays are filled only on the selected indices.
   hvf.info$variable <- FALSE
   hvf.info$rank <- NA
-  vf <- head(
-    x = order(hvf.info$mvp.dispersion, decreasing = TRUE),
-    n = nselect
+  vf <- .TopKIndices(
+    x = hvf.info$mvp.dispersion,
+    k = nselect
   )
   hvf.info$variable[vf] <- TRUE
   hvf.info$rank[vf] <- seq_along(along.with = vf)
+  return(hvf.info)
+}
+
+#' Optimized dispersion-based feature selector.
+#'
+#' Avoids constructing and storing intermediate subsets; only computes the top
+#' features needed for ranks and flags.
+#'
+#' @keywords internal
+#' @noRd
+DISP_rewrite <- function(
+  data,
+  nselect = 2000L,
+  verbose = TRUE,
+  ...
+) {
+  hvf.info <- CalcDispersion(object = data, verbose = verbose, ...)
+  # Same contract as legacy path: same columns, same ranking semantics, with a
+  # faster top-k primitive to avoid extra vector creation/sorting work.
+  hvf.info$variable <- FALSE
+  hvf.info$rank <- NA
+  vf <- .TopKIndices(
+    x = hvf.info$mvp.dispersion,
+    k = nselect
+  )
+  if (length(x = vf) > 0L) {
+    hvf.info$variable[vf] <- TRUE
+    hvf.info$rank[vf] <- seq_along(along.with = vf)
+  }
   return(hvf.info)
 }
 
@@ -1125,24 +1419,35 @@ DISP <- function(
 ) {
   fmargin <- .CheckFmargin(fmargin = fmargin)
   nfeatures <- dim(x = data)[fmargin]
+  # Compute feature mean and variance first (sparse and dense paths diverge to
+  # avoid expensive generic operations on large sparse matrices).
   # TODO: Support transposed matrices
   # nfeatures <- nrow(x = data)
   if (IsSparse(x = data)) {
-    mean.func <- .SparseMean
-    var.func <- .SparseFeatureVar
+    use_sparse_stats <- TRUE
   } else {
-    mean.func <- .Mean
-    var.func <- .FeatureVar
+    use_sparse_stats <- FALSE
   }
   hvf.info <- SeuratObject::EmptyDF(n = nfeatures)
-  # hvf.info$mean <- mean.func(data = data, margin = fmargin)
-  hvf.info$mean <- rowMeans(x = data)
-  hvf.info$variance <- var.func(
-    data = data,
-    mu = hvf.info$mean,
-    fmargin = fmargin,
-    verbose = verbose
-  )
+  if (use_sparse_stats) {
+    vst.stats <- SparseRowStats(
+      mat = data,
+      display_progress = verbose
+    )
+    hvf.info$mean <- vst.stats$mean
+    hvf.info$variance <- vst.stats$variance
+  } else {
+    hvf.info$mean <- rowMeans(x = data)
+    hvf.info$variance <- .FeatureVar(
+      data = data,
+      mu = hvf.info$mean,
+      fmargin = fmargin,
+      verbose = verbose
+    )
+  }
+  if (!is.null(x = rownames(x = data)) && length(x = rownames(x = data)) == nfeatures) {
+    rownames(x = hvf.info) <- rownames(x = data)
+  }
   hvf.info$variance.expected <- 0L
   not.const <- hvf.info$variance > 0
   fit <- loess(
@@ -1151,22 +1456,49 @@ DISP <- function(
     span = span
   )
   hvf.info$variance.expected[not.const] <- 10 ^ fit$fitted
-  hvf.info$variance.standardized <- var.func(
-    data = data,
-    mu = hvf.info$mean,
-    standardize = TRUE,
-    sd = sqrt(x = hvf.info$variance.expected),
-    clip = clip,
-    verbose = verbose
-  )
+  if (use_sparse_stats) {
+    # Sparse path: use fused C-backed row stats + specialized clip-aware
+    # standardization so we avoid materializing expensive intermediates.
+    if (is.null(x = clip)) {
+      clip <- sqrt(x = dim(x = data)[-fmargin])
+    }
+    hvf.info$variance.standardized <- SparseRowVarStd(
+      mat = data,
+      mu = hvf.info$mean,
+      sd = sqrt(x = hvf.info$variance.expected),
+      vmax = clip,
+      display_progress = verbose
+    )
+  } else {
+    # Dense path: compute standardized variance in R for numerical parity with
+    # prior behavior while preserving explicit row/column margin handling.
+    hvf.info$variance.standardized <- .FeatureVar(
+      data = data,
+      mu = hvf.info$mean,
+      fmargin = fmargin,
+      standardize = TRUE,
+      sd = sqrt(x = hvf.info$variance.expected),
+      clip = clip,
+      verbose = verbose
+    )
+  }
   hvf.info$variable <- FALSE
   hvf.info$rank <- NA
   vs <- hvf.info$variance.standardized
-  vs[vs == 0] <- NA
-  vf <- head(
-    x = order(hvf.info$variance.standardized, decreasing = TRUE),
-    n = nselect
-  )
+  nselect <- max(nselect, 0L)
+  nfeatures.use <- nrow(x = hvf.info)
+  # Mark top features and assign rank. For small requested `nselect`, use a
+  # partial selection pass; for full-range requests preserve stable full ordering.
+  if (nselect > 0L && nselect < nfeatures.use) {
+    vf <- .TopKIndices(x = vs, k = nselect)
+  } else {
+    if (nselect > 0L) {
+      vf <- order(vs, decreasing = TRUE, na.last = TRUE)
+      vf <- head(x = vf, n = nselect)
+    } else {
+      vf <- integer(0L)
+    }
+  }
   hvf.info$variable[vf] <- TRUE
   hvf.info$rank[vf] <- seq_along(along.with = vf)
   # colnames(x = hvf.info) <- paste0('vst.', colnames(x = hvf.info))
@@ -2122,9 +2454,51 @@ MVP <- function(
   dispersion.cutoff = c(1, Inf),
   ...
 ) {
+  impl <- getOption(x = 'Seurat.FindVariableFeatures.mvp.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = MVP_legacy(
+      data = data,
+      verbose = verbose,
+      nselect = nselect,
+      mean.cutoff = mean.cutoff,
+      dispersion.cutoff = dispersion.cutoff,
+      ...
+    ),
+    'rewrite' = MVP_rewrite(
+      data = data,
+      verbose = verbose,
+      nselect = nselect,
+      mean.cutoff = mean.cutoff,
+      dispersion.cutoff = dispersion.cutoff,
+      ...
+    )
+  )
+}
+
+#' Legacy mean.var.plot feature selector.
+#'
+#' Keeps the historical behavior for mvp feature filtering and ranking.
+#'
+#' @keywords internal
+#' @noRd
+MVP_legacy <- function(
+  data,
+  verbose = TRUE,
+  nselect = 2000L,
+  mean.cutoff = c(0.1, 8),
+  dispersion.cutoff = c(1, Inf),
+  ...
+) {
   hvf.info <- DISP(data = data, nselect = nselect, verbose = verbose)
   hvf.info$variable <- FALSE
   hvf.info$rank <- NA
+  # Historical pipeline: rank by residual dispersion first, then apply mean/disp
+  # thresholds, then restore original feature order for a stable output object.
   hvf.info <- hvf.info[order(hvf.info$mvp.dispersion, decreasing = TRUE), , drop = FALSE]
   means.use <- (hvf.info[, 1] > mean.cutoff[1]) & (hvf.info[, 1] < mean.cutoff[2])
   dispersions.use <- (hvf.info[, 3] > dispersion.cutoff[1]) & (hvf.info[, 3] < dispersion.cutoff[2])
@@ -2135,5 +2509,44 @@ MVP <- function(
   hvf.info <- hvf.info[order(as.numeric(row.names(hvf.info))), ]
   # hvf.info[hvf.info$variable,'rank'] <- rank(x = hvf.info[hvf.info$variable,'rank'])
   # hvf.info[!hvf.info$variable,'rank'] <- NA
+  return(hvf.info)
+}
+
+#' Optimized mean.var.plot feature selector.
+#'
+#' This path minimizes sorting and indexing overhead:
+#' it applies filtering before ranking and sorts only the selected feature set.
+#'
+#' @keywords internal
+#' @noRd
+MVP_rewrite <- function(
+  data,
+  verbose = TRUE,
+  nselect = 2000L,
+  mean.cutoff = c(0.1, 8),
+  dispersion.cutoff = c(1, Inf),
+  ...
+) {
+  hvf.info <- DISP(data = data, nselect = nselect, verbose = verbose)
+  hvf.info$variable <- FALSE
+  hvf.info$rank <- NA
+  # Rewrite pipeline: filter first by user cutoffs, then rank only the filtered set
+  # by dispersion; avoids touching the full table for ranking in most cases.
+  means.use <- (hvf.info[, 1] > mean.cutoff[1]) & (hvf.info[, 1] < mean.cutoff[2])
+  dispersions.use <- (hvf.info[, 3] > dispersion.cutoff[1]) & (hvf.info[, 3] < dispersion.cutoff[2])
+  selected.indices <- which(means.use & dispersions.use)
+  if (length(x = selected.indices) > 1L) {
+    ordered.indices <- selected.indices[
+      order(
+        hvf.info$mvp.dispersion[selected.indices],
+        decreasing = TRUE
+      )
+    ]
+    hvf.info$rank[ordered.indices] <- seq_along(ordered.indices)
+    hvf.info$variable[ordered.indices] <- TRUE
+  } else if (length(x = selected.indices) == 1L) {
+    hvf.info$variable[selected.indices] <- TRUE
+    hvf.info$rank[selected.indices] <- 1L
+  }
   return(hvf.info)
 }
