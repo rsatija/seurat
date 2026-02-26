@@ -21,6 +21,14 @@ LogNorm <- function(data, scale_factor, display_progress = TRUE) {
     .Call('_Seurat_LogNorm', PACKAGE = 'Seurat', data, scale_factor, display_progress)
 }
 
+CLRNorm <- function(data, margin, display_progress = TRUE) {
+    .Call('_Seurat_CLRNorm', PACKAGE = 'Seurat', data, margin, display_progress)
+}
+
+RelativeCountsNorm <- function(data, scale_factor, display_progress = TRUE) {
+    .Call('_Seurat_RelativeCountsNorm', PACKAGE = 'Seurat', data, scale_factor, display_progress)
+}
+
 Standardize <- function(mat, display_progress = TRUE) {
     .Call('_Seurat_Standardize', PACKAGE = 'Seurat', mat, display_progress)
 }

@@ -1,0 +1,13 @@
+library(devtools)
+library(Seurat)
+library(SeuratData)
+load_all('/Users/rahulsatija/seurat_rewrite2', reset=TRUE, quiet=TRUE, recompile=TRUE)
+bmcite <- LoadData('bmcite')
+cat('assays:', paste(Assays(bmcite), collapse=', '), '\n')
+
+options(Seurat.NormalizeData.clr.impl='legacy')
+out <- NormalizeData(object=bmcite, assay='ADT', normalization.method='CLR', margin=1, verbose=FALSE)
+cat('assays out:', paste(Assays(out), collapse=', '), '\n')
+cat('contains ADT slot?', 'ADT' %in% Assays(out), '\n')
+str(out)
+print(levels(slot(out, 'tools')[[1]][1]))

@@ -21,8 +21,20 @@ Eigen::SparseMatrix<double> RowMergeMatrices(Eigen::SparseMatrix<double, Eigen::
                                              std::vector< std::string > mat1_rownames,
                                              std::vector< std::string > mat2_rownames,
                                              std::vector< std::string > all_rownames);
+// Log-normalize sparse columns (used by NormalizeData sparse rewrite).
+// Formula: value <- log1p(value / colSum(column) * scale_factor)
 Eigen::SparseMatrix<double> LogNorm(Eigen::SparseMatrix<double> data, int scale_factor,
                                     bool display_progress );
+// CLR-normalize sparse columns/rows:
+//   x <- log1p(x / exp(mean(log1p(x[x > 0], na.rm=TRUE))))
+// computed over each vector of the selected margin.
+Eigen::SparseMatrix<double> CLRNorm(Eigen::SparseMatrix<double> data, int margin,
+                                   bool display_progress );
+// Relative-counts normalization on sparse columns:
+//   x <- x / colSum(column) * scale_factor.
+Eigen::SparseMatrix<double> RelativeCountsNorm(Eigen::SparseMatrix<double> data,
+                                              double scale_factor,
+                                              bool display_progress);
 NumericMatrix Standardize(const Eigen::Map<Eigen::MatrixXd> mat, bool display_progress);
 Eigen::MatrixXd FastSparseRowScale(Eigen::SparseMatrix<double> mat, bool scale, bool center,
                                    double scale_max, bool display_progress);

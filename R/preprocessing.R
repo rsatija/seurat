@@ -3338,6 +3338,41 @@ ReadVizgen <- function(
 #' mat_norm
 #'
 RelativeCounts <- function(data, scale.factor = 1, verbose = TRUE) {
+  .RCNormalize(
+    data = data,
+    scale.factor = scale.factor,
+    verbose = verbose
+  )
+}
+
+# @param data Sparse matrix.
+# @param margin Normalization margin (always column-wise for RC).
+# @param verbose Print progress.
+# @keywords internal
+# @noRd
+# Route RC normalization through legacy C++ rewrite with fallback for unsupported inputs.
+.RCNormalize <- function(
+  data,
+  scale.factor = 1,
+  verbose = TRUE
+) {
+  .RCNormalize_legacy(
+    data = data,
+    scale.factor = scale.factor,
+    verbose = verbose
+  )
+}
+
+# Legacy RC normalization using existing sparse R path.
+# Keeps behavior for all matrix classes supported by as.sparse coercion.
+# @keywords internal
+# @noRd
+.RCNormalize_legacy <- function(
+  data,
+  scale.factor = 1,
+  verbose = TRUE
+) {
+  # Coerce all input shapes to sparse matrix to guarantee column-wise scaling semantics.
   if (is.data.frame(x = data)) {
     data <- as.matrix(x = data)
   }
@@ -3347,9 +3382,38 @@ RelativeCounts <- function(data, scale.factor = 1, verbose = TRUE) {
   if (verbose) {
     cat("Performing relative-counts-normalization\n", file = stderr())
   }
+  # Apply sparse in-place scaling by column total while preserving structure.
   norm.data <- data
   norm.data@x <- norm.data@x / rep.int(Matrix::colSums(norm.data), diff(norm.data@p)) * scale.factor
   return(norm.data)
+}
+
+# C++ rewrite for RC normalization on sparse matrices.
+# Falls back to legacy for unsupported inputs.
+# @keywords internal
+# @noRd
+.RCNormalize_rewrite <- function(
+  data,
+  scale.factor = 1,
+  verbose = TRUE
+) {
+  if (!inherits(x = data, what = 'dgCMatrix')) {
+    return(
+      .RCNormalize_legacy(
+        data = data,
+        scale.factor = scale.factor,
+        verbose = verbose
+      )
+    )
+  }
+  show_progress <- isTRUE(verbose)
+  out <- RelativeCountsNorm(
+    data = data,
+    scale_factor = scale.factor,
+    display_progress = show_progress
+  )
+  dimnames(out) <- dimnames(data)
+  return(out)
 }
 
 #' Run the mark variogram computation on a given position matrix and expression
@@ -4523,6 +4587,10 @@ FindSpatiallyVariableFeatures.Seurat <- function(
   object <- LogSeuratCommand(object = object)
 }
 
+#' Coerce a data.frame to matrix and run the default LogNormalize behavior.
+#'
+#' This is a small adapter so existing method dispatch keeps accepting
+#' data.frame inputs for normalization.
 #' @rdname LogNormalize
 #' @method LogNormalize data.frame
 #' @export
@@ -4534,6 +4602,7 @@ LogNormalize.data.frame <- function(
   verbose = TRUE,
   ...
 ) {
+  # Delegate conversion to matrix then reuse LogNormalize default behavior.
   return(LogNormalize(
     data = as.matrix(x = data),
     scale.factor = scale.factor,
@@ -4542,6 +4611,10 @@ LogNormalize.data.frame <- function(
   ))
 }
 
+#' Run log-normalization on V3Matrix inputs using the C++ LogNorm kernel.
+#'
+#' The matrix is converted to dgCMatrix when needed, then delegated to
+#' `LogNorm(...)` for dense-safe compiled execution.
 #' @rdname LogNormalize
 #' @method LogNormalize V3Matrix
 #' @export
@@ -4553,6 +4626,7 @@ LogNormalize.V3Matrix <- function(
   verbose = TRUE,
   ...
 ) {
+  # Keep V3Matrix as sparse matrix for LogNorm and preserve dimension names.
   # if (is.data.frame(x = data)) {
   #   data <- as.matrix(x = data)
   # }
@@ -4572,6 +4646,10 @@ LogNormalize.V3Matrix <- function(
 #' @importFrom future.apply future_lapply
 #' @importFrom future nbrOfWorkers
 #'
+#' Normalize a V3Matrix and optionally parallelize across chunks.
+#'
+#' This method dispatches by `normalization.method` and optionally splits the
+#' matrix into chunks when multiple workers are available.
 #' @param normalization.method Method for normalization.
 #'  \itemize{
 #'   \item \dQuote{\code{LogNormalize}}: Feature counts for each cell are
@@ -4602,21 +4680,34 @@ NormalizeData.V3Matrix <- function(
   verbose = TRUE,
   ...
 ) {
+  # Validate user-only arguments to catch hidden arguments early.
   CheckDots(...)
   if (is.null(x = normalization.method)) {
     return(object)
   }
-  normalized.data <- if (nbrOfWorkers() > 1) {
+  rewrite_impl <- switch(
+    EXPR = normalization.method,
+    CLR = identical(
+      x = getOption(x = 'Seurat.NormalizeData.clr.impl', default = 'legacy')[1L],
+      y = 'rewrite'
+    ),
+    RC = FALSE,
+    FALSE
+  )
+  use_parallel <- isTRUE(nbrOfWorkers() > 1L) && isFALSE(rewrite_impl)
+  # Parallel execution for future workers splits columns/rows by `margin`.
+  # Single worker keeps exact original method behavior for all branches.
+  normalized.data <- if (use_parallel) {
     norm.function <- switch(
       EXPR = normalization.method,
-      'LogNormalize' = LogNormalize,
-      'CLR' = CustomNormalize,
-      'RC' = RelativeCounts,
+    'LogNormalize' = LogNormalize,
+      'CLR' = .CLRNormalize,
+      'RC' = .RCNormalize,
       stop("Unknown normalization method: ", normalization.method)
     )
-    if (normalization.method != 'CLR') {
-      margin <- 2
-    }
+      if (normalization.method != 'CLR') {
+        margin <- 2
+      }
     tryCatch(
       expr = Parenting(parent.find = 'Seurat', margin = margin),
       error = function(e) {
@@ -4642,16 +4733,14 @@ NormalizeData.V3Matrix <- function(
         } else {
           object[, block[1]:block[2], drop = FALSE]
         }
-        clr_function <- function(x) {
-          return(log1p(x = x / (exp(x = sum(log1p(x = x[x > 0]), na.rm = TRUE) / length(x = x)))))
-        }
         args <- list(
           data = data,
           scale.factor = scale.factor,
           verbose = FALSE,
-          custom_function = clr_function, margin = margin
+          margin = margin
         )
         args <- args[names(x = formals(fun = norm.function))]
+        # Compute one block with the same normalizer used for the full matrix.
         return(do.call(
           what = norm.function,
           args = args
@@ -4668,6 +4757,7 @@ NormalizeData.V3Matrix <- function(
       args = normalized.data
     )
   } else {
+    # Single-thread path: call the selected normalization method directly.
     switch(
       EXPR = normalization.method,
       'LogNormalize' = LogNormalize(
@@ -4675,14 +4765,10 @@ NormalizeData.V3Matrix <- function(
         scale.factor = scale.factor,
         verbose = verbose
       ),
-      'CLR' = CustomNormalize(
+      'CLR' = .CLRNormalize(
         data = object,
-        custom_function = function(x) {
-          return(log1p(x = x / (exp(x = sum(log1p(x = x[x > 0]), na.rm = TRUE) / length(x = x)))))
-        },
         margin = margin,
         verbose = verbose
-        # across = across
       ),
       'RC' = RelativeCounts(
         data = object,
@@ -4695,6 +4781,10 @@ NormalizeData.V3Matrix <- function(
   return(normalized.data)
 }
 
+#' Normalize assay-count data for a single assay object.
+#'
+#' This delegates to `NormalizeData(...)` on `counts` and writes the result to
+#' the assay data slot so downstream methods consistently read from `data`.
 #' @rdname NormalizeData
 #' @concept preprocessing
 #' @export
@@ -4708,6 +4798,7 @@ NormalizeData.Assay <- function(
   verbose = TRUE,
   ...
 ) {
+  # Normalize raw counts for the assay and write the normalized result into `data`.
   object <- SetAssayData(
     object = object,
     slot = 'data',
@@ -4725,6 +4816,9 @@ NormalizeData.Assay <- function(
 
 #' @param assay Name of assay to use
 #'
+#' Normalize a single assay inside a Seurat object and update the chosen assay.
+#' The command is wrapped with `LogSeuratCommand` so provenance is preserved.
+#' 
 #' @rdname NormalizeData
 #' @concept preprocessing
 #' @export
@@ -4746,6 +4840,7 @@ NormalizeData.Seurat <- function(
   verbose = TRUE,
   ...
 ) {
+  # Normalize the selected assay in-place and record command lineage.
   assay <- assay %||% DefaultAssay(object = object)
   assay.data <- NormalizeData(
     object = object[[assay]],
@@ -5430,19 +5525,18 @@ ComputeRMetric <- function(mv, r.metric = 5) {
   return(r.metric.results)
 }
 
-# Normalize a given data matrix
-#
-# Normalize a given matrix with a custom function. Essentially just a wrapper
-# around apply. Used primarily in the context of CLR normalization.
-#
-# @param data Matrix with the raw count data
-# @param custom_function A custom normalization function
-# @param margin Which way to we normalize. Set 1 for rows (features) or 2 for columns (genes)
-# @parm across Which way to we normalize? Choose form 'cells' or 'features'
-# @param verbose Show progress bar
-#
-# @return Returns a matrix with the custom normalization
-#
+#' Normalize matrix values with a user-provided function along a margin.
+#'
+#' This helper wraps `apply` (or `pbapply` when verbose) and is mainly used by
+#' CLR normalization and related sparse-compatible workflows.
+#'
+#' @param data Matrix with the raw count data
+#' @param custom_function A function applied to each margin slice
+#' @param margin Which way to normalize. Set 1 for rows/features, 2 for columns/cells
+#' @param verbose Show progress bar
+#' @return Returns a matrix with the custom normalization.
+#' @keywords internal
+#' @noRd
 #' @importFrom Matrix t
 #' @importFrom methods as
 #' @importFrom pbapply pbapply
@@ -5464,6 +5558,8 @@ CustomNormalize <- function(data, custom_function, margin, verbose = TRUE) {
   if (verbose) {
     message("Normalizing across ", c('features', 'cells')[margin])
   }
+  # Keep output orientation consistent with Seurat convention:
+  # when normalizing rows (margin 1), transpose before returning.
   norm.data <- myapply(
     X = data,
     MARGIN = margin,
@@ -5474,6 +5570,92 @@ CustomNormalize <- function(data, custom_function, margin, verbose = TRUE) {
   colnames(x = norm.data) <- colnames(x = data)
   rownames(x = norm.data) <- rownames(x = data)
   return(norm.data)
+}
+
+# Internal dispatcher for CLR normalization implementation selection.
+# Legacy behavior: CustomNormalize + closure.
+# Rewrite behavior: C++ `CLRNorm()` on sparse data.
+# @keywords internal
+# @noRd
+.CLRNormalize <- function(
+  data,
+  margin,
+  verbose = TRUE
+) {
+  impl <- getOption(x = 'Seurat.NormalizeData.clr.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = .CLRNormalize_legacy(
+      data = data,
+      margin = margin,
+      verbose = verbose
+    ),
+    'rewrite' = .CLRNormalize_rewrite(
+      data = data,
+      margin = margin,
+      verbose = verbose
+    )
+  )
+}
+
+# Legacy CLR normalization (dense + sparse) exactly as prior CustomNormalize path.
+# @keywords internal
+# @noRd
+.CLRNormalize_legacy <- function(
+  data,
+  margin,
+  verbose = TRUE
+) {
+  myapply <- ifelse(test = verbose, yes = pbapply, no = apply)
+  if (verbose) {
+    message("Normalizing across ", c('features', 'cells')[margin])
+  }
+  clr_function <- function(x) {
+    log_mean <- sum(log1p(x = x[x > 0]), na.rm = TRUE) / length(x = x)
+    return(log1p(x = x / exp(log_mean)))
+  }
+  norm.data <- myapply(
+    X = data,
+    MARGIN = margin,
+    FUN = clr_function)
+  if (margin == 1) {
+    norm.data = Matrix::t(x = norm.data)
+  }
+  colnames(x = norm.data) <- colnames(x = data)
+  rownames(x = norm.data) <- rownames(x = data)
+  return(norm.data)
+}
+
+# Rewrite CLR normalization for sparse dgCMatrix using Rcpp.
+# Falls back to legacy for unsupported inputs to preserve exact existing behavior.
+# @keywords internal
+# @noRd
+.CLRNormalize_rewrite <- function(
+  data,
+  margin,
+  verbose = TRUE
+) {
+  if (!inherits(x = data, what = 'dgCMatrix')) {
+    return(
+      .CLRNormalize_legacy(
+        data = data,
+        margin = margin,
+        verbose = verbose
+      )
+    )
+  }
+  show_progress <- isTRUE(verbose)
+  out <- CLRNorm(
+    data = data,
+    margin = as.integer(margin),
+    display_progress = show_progress
+  )
+  dimnames(out) <- dimnames(data)
+  return(out)
 }
 
 # Inter-maxima quantile sweep to find ideal barcode thresholds

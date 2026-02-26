@@ -236,6 +236,10 @@ FindSpatiallyVariableFeatures.StdAssay <- function(
 }
 
 
+#' Normalize each vector (row or column) independently by library-size scaling.
+#'
+#' For each slice along `margin`, compute:
+#' `log1p(sum-normalized values * scale.factor)`.
 #' @rdname LogNormalize
 #' @method LogNormalize default
 #'
@@ -278,6 +282,11 @@ LogNormalize.default <- function(
   return(data)
 }
 
+#' Normalize iterable matrices by transposing once, performing per-cell scaling, and
+#' restoring orientation.
+#'
+#' This path uses `BPCells::t` to avoid fully materializing full matrices in
+#' memory and keeps the same numerical formula as the default path.
 #' @method LogNormalize IterableMatrix
 #' @export
 #'
@@ -296,6 +305,11 @@ LogNormalize.IterableMatrix <- function(
 
 #' @importFrom SeuratObject IsSparse
 #'
+#' Route normalization requests to method-specific helpers.
+#'
+#' For sparse matrices with matching orientation, LogNormalize uses
+#' `.SparseNormalize(...)` and all other requested methods are handled by
+#' their corresponding implementations.
 #' @method NormalizeData default
 #' @export
 #'
@@ -339,11 +353,8 @@ NormalizeData.default <- function(
           !inherits(x = object, what = 'matrix')) {
         stop('CLR normalization is only supported for dense and dgCMatrix')
       }
-      CustomNormalize(
+      .CLRNormalize(
         data = object,
-        custom_function = function(x) {
-          return(log1p(x = x/(exp(x = sum(log1p(x = x[x > 0]), na.rm = TRUE)/length(x = x)))))
-        },
         margin = margin,
         verbose = verbose
       )
@@ -353,9 +364,11 @@ NormalizeData.default <- function(
           !inherits(x = object, what = 'matrix')) {
         stop('RC normalization is only supported for dense and dgCMatrix')
       }
-      RelativeCounts(data = object,
-                     scale.factor = scale.factor,
-                     verbose = verbose)
+      .RCNormalize(
+        data = object,
+        scale.factor = scale.factor,
+        verbose = verbose
+      )
     }
   )
   return(normalized)
@@ -364,6 +377,11 @@ NormalizeData.default <- function(
 #' @importFrom SeuratObject Cells DefaultLayer DefaultLayer<- Features
 #' LayerData LayerData<-
 #'
+#' Normalize each requested assay layer in place and write to `save`.
+#'
+#' The method resolves layer names, iterates requested layers, and delegates to
+#' `NormalizeData` for the concrete normalization math. The resulting matrix is
+#' assigned back through `LayerData`.
 #' @method NormalizeData StdAssay
 #' @export
 #'
@@ -838,6 +856,14 @@ DISP <- function(
   return(fvars)
 }
 
+#' Compute means across a matrix margin.
+#'
+#' Internal utility used by helper normalization/statistics code.
+#' @keywords internal
+#' @noRd
+#' @param data Matrix-like object
+#' @param margin Margin index to average across (1 = rows/features, 2 = cols/cells)
+#' @return Numeric vector of means.
 .Mean <- function(data, margin = 1L) {
   nout <- dim(x = data)[margin]
   nobs <- dim(x = data)[-margin]
@@ -853,7 +879,54 @@ DISP <- function(
   return(means)
 }
 
+## Internal dispatcher for sparse normalization implementation selection.
+##
+## The normalization engine uses option:
+##   `Seurat.NormalizeData.sparse_normalize.impl = "legacy" | "rewrite"`
+## to choose between the historical R code path and compiled C++ path.
+#' Normalize sparse matrices by dispatching to legacy or rewrite kernel.
+#'
+#' @keywords internal
+#' @noRd
+#' @param data Sparse matrix
+#' @param scale.factor Numeric scaling factor
+#' @param verbose Display progress
+#' @return Normalized sparse matrix.
 .SparseNormalize <- function(data, scale.factor = 1e4, verbose = TRUE) {
+  # Dispatch sparse normalization to one of two internal implementations:
+  # - legacy: loop over pointers and entries in pure R (historical behavior)
+  # - rewrite: delegate all heavy scaling/log1p work to compiled C++ (LogNorm)
+  impl <- getOption(x = 'Seurat.NormalizeData.sparse_normalize.impl', default = 'legacy')
+  if (!is.character(x = impl)) {
+    impl <- 'legacy'
+  }
+  impl <- match.arg(arg = impl[1L], choices = c('legacy', 'rewrite'))
+  switch(
+    EXPR = impl,
+    'legacy' = .SparseNormalize_legacy(
+      data = data,
+      scale.factor = scale.factor,
+      verbose = verbose
+    ),
+    'rewrite' = .SparseNormalize_rewrite(
+      data = data,
+      scale.factor = scale.factor,
+      verbose = verbose
+    )
+  )
+}
+
+#' Historical in-R sparse normalization implementation.
+#'
+#' Uses sparse slot pointers and explicit updates to the `@x` entries by column.
+#' Kept to preserve prior behavior and as a fallback.
+#' @keywords internal
+#' @noRd
+#' @param data Sparse matrix
+#' @param scale.factor Numeric scaling factor
+#' @param verbose Display progress bar
+#' @return Normalized sparse matrix.
+.SparseNormalize_legacy <- function(data, scale.factor = 1e4, verbose = TRUE) {
   entryname <- .SparseSlots(x = data, type = 'entries')
   p <- slot(object = data, name = .SparseSlots(x = data, type = 'pointers'))
   if (p[1L] == 0) {
@@ -864,6 +937,8 @@ DISP <- function(
     pb <- txtProgressBar(style = 3L, file = stderr())
   }
   for (i in seq_len(length.out = np)) {
+    # Update one sparse column in-place: compute column total and apply
+    # `log1p(value / column_total * scale.factor)` to all non-zero entries.
     idx <- seq.int(from = p[i], to = p[i + 1] - 1L)
     xidx <- slot(object = data, name = entryname)[idx]
     slot(object = data, name = entryname)[idx] <- log1p(
@@ -877,6 +952,44 @@ DISP <- function(
     close(con = pb)
   }
   return(data)
+}
+
+#' Rewritten sparse normalization that uses compiled LogNorm.
+#'
+#' Preserves legacy semantics by falling back to `.SparseNormalize_legacy()` when
+#' non-integer scale factors are supplied.
+#' @keywords internal
+#' @noRd
+#' @param data Sparse matrix
+#' @param scale.factor Numeric scaling factor
+#' @param verbose Display progress bar
+#' @return Normalized sparse matrix.
+.SparseNormalize_rewrite <- function(data, scale.factor = 1e4, verbose = TRUE) {
+  # Rewrite path executes sparse log-normalization in compiled C++ (LogNorm):
+  #   value <- log1p(value / col_sum * scale.factor)
+  #
+  # A legacy fallback is used when scale.factor is not an integer-like
+  # scalar, so we preserve historical behavior for edge-case inputs that were
+  # previously handled with double-precision scaling in R.
+  is_integer_scale <- is.numeric(scale.factor) &&
+    length(scale.factor) == 1L &&
+    is.finite(scale.factor) &&
+    isTRUE(all.equal(scale.factor, as.integer(scale.factor)))
+  show_progress <- isTRUE(verbose)
+  if (!is_integer_scale) {
+    return(
+      .SparseNormalize_legacy(
+        data = data,
+        scale.factor = scale.factor,
+        verbose = verbose
+      )
+    )
+  }
+  LogNorm(
+    data = data,
+    scale_factor = as.integer(x = scale.factor),
+    display_progress = show_progress
+  )
 }
 
 #' @param data A sparse matrix

@@ -111,14 +111,171 @@ Eigen::SparseMatrix<double> RowMergeMatrices(Eigen::SparseMatrix<double, Eigen::
   return combined_mat;
 }
 
+// Log-normalize sparse matrix columns for Seurat's NormalizeData.fast path.
+//
+// For each column k:
+//   data[k, i] <- log1p(data[k, i] / colSums[k] * scale_factor)
+//
+// Notes:
+// - Input is passed by value, so caller receives a new object.
+// - Uses RcppProgress progress bar when display_progress is TRUE.
+// - Assumes column sums are strictly positive for sparse normalized input.
 // [[Rcpp::export(rng = false)]]
 Eigen::SparseMatrix<double> LogNorm(Eigen::SparseMatrix<double> data, int scale_factor, bool display_progress = true){
   Progress p(data.outerSize(), display_progress);
-  Eigen::VectorXd colSums = data.transpose() * Eigen::VectorXd::Ones(data.rows());
+  const int ncols = data.cols();
+  const double sf = static_cast<double>(scale_factor);
+  const int *outer = data.outerIndexPtr();
+  double *x = data.valuePtr();
+  bool has_nonfinite = false;
+  std::vector<double> col_sums(ncols, 0.0);
+  for (int k = 0; k < ncols; ++k) {
+    const int start = outer[k];
+    const int end = outer[k + 1];
+    double col_sum = 0.0;
+    for (int j = start; j < end; ++j) {
+      if (!std::isfinite(x[j])) {
+        has_nonfinite = true;
+      }
+      col_sum += x[j];
+    }
+    col_sums[k] = col_sum;
+  }
   for (int k=0; k < data.outerSize(); ++k){
     p.increment();
-    for (Eigen::SparseMatrix<double>::InnerIterator it(data, k); it; ++it){
-      it.valueRef() = log1p(double(it.value()) / colSums[k] * scale_factor);
+    const int start = outer[k];
+    const int end = outer[k + 1];
+    const double scale = sf / col_sums[k];
+    for (int j = start; j < end; ++j) {
+      if (has_nonfinite) {
+        if (!std::isfinite(x[j])) {
+          continue;
+        }
+      }
+      x[j] = log1p(x[j] * scale);
+    }
+  }
+  return data;
+}
+
+// CLR-normalize sparse matrix by margin.
+// Margin 1 = rows, Margin 2 = columns.
+// For each vector v:
+//   v <- log1p(v / exp(sum(log1p(v[v > 0], na.rm = TRUE) / length(v)))
+// [[Rcpp::export(rng = false)]]
+Eigen::SparseMatrix<double> CLRNorm(Eigen::SparseMatrix<double> data, int margin, bool display_progress = true){
+  if ((margin != 1) && (margin != 2)) {
+    stop("`margin` must be 1 or 2");
+  }
+  const int nrows = data.rows();
+  const int ncols = data.cols();
+  const int vector_len = (margin == 1) ? ncols : nrows;
+  const int progress_n = (margin == 1) ? ncols * 2 : ncols;
+  Progress p(progress_n, display_progress);
+  const int *outer = data.outerIndexPtr();
+  const int *inner = data.innerIndexPtr();
+  double *x = data.valuePtr();
+  bool has_nonfinite = false;
+
+  if (margin == 1) {
+    // Row-wise CLR without explicit transpose:
+    // 1) accumulate row-wise log1p-sums from non-zero entries.
+    // 2) convert each row sum to its geometric mean denominator.
+    // 3) apply `log1p(value / denom[row])` on the original column-major matrix.
+    std::vector<double> row_log_sums(nrows, 0.0);
+    for (int k = 0; k < ncols; ++k) {
+      p.increment();
+      const int start = outer[k];
+      const int end = outer[k + 1];
+      for (int j = start; j < end; ++j) {
+        const double value = x[j];
+        if ((value > 0) && std::isfinite(value)) {
+          row_log_sums[inner[j]] += log1p(value);
+        } else if (!std::isfinite(value)) {
+          has_nonfinite = true;
+        }
+      }
+    }
+    std::vector<double> row_denoms(nrows);
+    const double inv_nrows = 1.0 / static_cast<double>(vector_len);
+    for (int i = 0; i < nrows; ++i) {
+      row_denoms[i] = exp(row_log_sums[i] * inv_nrows);
+    }
+    for (int k = 0; k < ncols; ++k) {
+      p.increment();
+      const int start = outer[k];
+      const int end = outer[k + 1];
+      for (int j = start; j < end; ++j) {
+        const double value = x[j];
+        if (has_nonfinite && !std::isfinite(value)) {
+          continue;
+        }
+        x[j] = log1p(value / row_denoms[inner[j]]);
+      }
+    }
+  } else {
+    for (int k = 0; k < data.outerSize(); ++k) {
+      p.increment();
+      double log_sum = 0;
+      const int start = outer[k];
+      const int end = outer[k + 1];
+      for (int j = start; j < end; ++j) {
+        const double value = x[j];
+        if ((value > 0) && std::isfinite(value)) {
+          log_sum += log1p(value);
+        } else if (!std::isfinite(value)) {
+          has_nonfinite = true;
+        }
+      }
+      const double denom = exp(log_sum / static_cast<double>(vector_len));
+      for (int j = start; j < end; ++j) {
+        const double value = x[j];
+        if (has_nonfinite && !std::isfinite(value)) {
+          continue;
+        }
+        x[j] = log1p(value / denom);
+      }
+    }
+  }
+  return data;
+}
+
+// Relative-counts normalize sparse columns in-place:
+//   x <- x / colSums(x) * scale_factor.
+// [[Rcpp::export(rng = false)]]
+Eigen::SparseMatrix<double> RelativeCountsNorm(Eigen::SparseMatrix<double> data,
+                                              double scale_factor,
+                                              bool display_progress = true) {
+  const int ncols = data.cols();
+  const int *outer = data.outerIndexPtr();
+  double *x = data.valuePtr();
+  Progress p(ncols, display_progress);
+  bool has_nonfinite = false;
+  std::vector<double> col_sums(ncols, 0.0);
+  for (int k = 0; k < ncols; ++k) {
+    const int start = outer[k];
+    const int end = outer[k + 1];
+    double col_sum = 0.0;
+    for (int j = start; j < end; ++j) {
+      if (!std::isfinite(x[j])) {
+        has_nonfinite = true;
+      }
+      col_sum += x[j];
+    }
+    col_sums[k] = col_sum;
+  }
+  for (int k = 0; k < ncols; ++k) {
+    p.increment();
+    const double col_sum = col_sums[k];
+    const int start = outer[k];
+    const int end = outer[k + 1];
+    const double scale = scale_factor / col_sum;
+    for (int j = start; j < end; ++j) {
+      const double value = x[j];
+      if (has_nonfinite && !std::isfinite(value)) {
+        continue;
+      }
+      x[j] = value * scale;
     }
   }
   return data;
@@ -461,4 +618,3 @@ List GraphToNeighborHelper(Eigen::SparseMatrix<double> mat) {
   List neighbors = List::create(nn_idx, nn_dist);
   return(neighbors);
 }
-

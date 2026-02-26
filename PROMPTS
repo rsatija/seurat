@@ -1,0 +1,25 @@
+Let's start with NormalizeData: Read through the function, summarize how it works and its use cases. 
+
+Identify possible inefficiencies in the code, especially for large datasets and think about how to make it more efficient. For example, could complex computation be written in Rcpp/C++ to speed things up?  
+
+Yes, start with that. When you rewrite a function (including an internal one) implement _legacy and _rewrite versions of the function, so we can A/B test later
+
+Summarize why the new version is better, and if there are any expected changes
+
+Now do A/B testing. You can use the bmcite dataset. The attest_norm.R is a sample script with bmcite you can adapt to test his function
+
+Any other ideas to make the function faster/more efficient for large data?
+
+the rewrite should be faster. think about ways to speed up the code and test. keep trying until you improve the speed so that its faster than the legacy
+
+revert RC back to legacy, no need for rewrite if its slower
+
+Now let's focus on clean code and documentation. Is the new rewrite function efficiently written, does it need to be refactored?
+
+Suggest a plan to add documentation so that a new user reading the code be able to easily understand how it works. This should apply to every function related to this process, not just the ones you wrote, and should apply to both internal and user-facing functions. A function should have documentation at the beginning describing what it does, and comments at key places within the code explaining to users how it works. You can limit documentation to comments in the code (no vignette needed).
+
+Create a markdown file that summarizes all the changes made to NormalizeData, their rationale, and their performance improvements 
+
+Now let's move to FindVariableFeatures: Read through the function, summarize how it works and its use cases. 
+
+

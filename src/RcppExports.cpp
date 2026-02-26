@@ -84,6 +84,30 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// CLRNorm
+Eigen::SparseMatrix<double> CLRNorm(Eigen::SparseMatrix<double> data, int margin, bool display_progress);
+RcppExport SEXP _Seurat_CLRNorm(SEXP dataSEXP, SEXP marginSEXP, SEXP display_progressSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< Eigen::SparseMatrix<double> >::type data(dataSEXP);
+    Rcpp::traits::input_parameter< int >::type margin(marginSEXP);
+    Rcpp::traits::input_parameter< bool >::type display_progress(display_progressSEXP);
+    rcpp_result_gen = Rcpp::wrap(CLRNorm(data, margin, display_progress));
+    return rcpp_result_gen;
+END_RCPP
+}
+// RelativeCountsNorm
+Eigen::SparseMatrix<double> RelativeCountsNorm(Eigen::SparseMatrix<double> data, double scale_factor, bool display_progress);
+RcppExport SEXP _Seurat_RelativeCountsNorm(SEXP dataSEXP, SEXP scale_factorSEXP, SEXP display_progressSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< Eigen::SparseMatrix<double> >::type data(dataSEXP);
+    Rcpp::traits::input_parameter< double >::type scale_factor(scale_factorSEXP);
+    Rcpp::traits::input_parameter< bool >::type display_progress(display_progressSEXP);
+    rcpp_result_gen = Rcpp::wrap(RelativeCountsNorm(data, scale_factor, display_progress));
+    return rcpp_result_gen;
+END_RCPP
+}
 // Standardize
 NumericMatrix Standardize(Eigen::Map<Eigen::MatrixXd> mat, bool display_progress);
 RcppExport SEXP _Seurat_Standardize(SEXP matSEXP, SEXP display_progressSEXP) {
@@ -402,7 +426,7 @@ BEGIN_RCPP
 END_RCPP
 }
 
-RcppExport SEXP isnull(SEXP);
+RcppExport SEXP isnull(void *);
 
 static const R_CallMethodDef CallEntries[] = {
     {"_Seurat_RunModularityClusteringCpp", (DL_FUNC) &_Seurat_RunModularityClusteringCpp, 9},
@@ -410,6 +434,8 @@ static const R_CallMethodDef CallEntries[] = {
     {"_Seurat_RunUMISamplingPerCell", (DL_FUNC) &_Seurat_RunUMISamplingPerCell, 4},
     {"_Seurat_RowMergeMatrices", (DL_FUNC) &_Seurat_RowMergeMatrices, 5},
     {"_Seurat_LogNorm", (DL_FUNC) &_Seurat_LogNorm, 3},
+    {"_Seurat_CLRNorm", (DL_FUNC) &_Seurat_CLRNorm, 3},
+    {"_Seurat_RelativeCountsNorm", (DL_FUNC) &_Seurat_RelativeCountsNorm, 3},
     {"_Seurat_Standardize", (DL_FUNC) &_Seurat_Standardize, 2},
     {"_Seurat_FastSparseRowScale", (DL_FUNC) &_Seurat_FastSparseRowScale, 5},
     {"_Seurat_FastSparseRowScaleWithKnownStats", (DL_FUNC) &_Seurat_FastSparseRowScaleWithKnownStats, 7},
