@@ -158,6 +158,43 @@ Eigen::SparseMatrix<double> LogNorm(Eigen::SparseMatrix<double> data, int scale_
   return data;
 }
 
+//' Calculate sparse row means and unbiased variances in a single pass.
+//'
+//' This provides a fused C++ implementation for the VST branch:
+//'   - mean[x] = mean value across cells for each feature
+//'   - variance[x] = unbiased variance across cells for each feature
+//'
+//' Equivalent to the legacy pair of rowMeans + SparseRowVar2 for nonzero-aware
+//' sparse inputs when input has no nonfinite values.
+// [[Rcpp::export(rng = false)]]
+List SparseRowStats(Eigen::SparseMatrix<double> mat, bool display_progress = true){
+  mat = mat.transpose();
+  const int ncols = mat.cols();
+  const int nrows = mat.rows();
+  NumericVector means(ncols);
+  NumericVector variances(ncols);
+  if (display_progress == true) {
+    Rcpp::Rcerr << "Calculating gene means and variances" << std::endl;
+  }
+  Progress p(mat.outerSize(), display_progress);
+  for (int k = 0; k < mat.outerSize(); ++k) {
+    p.increment();
+    double col_sum = 0;
+    double col_sq_sum = 0;
+    for (Eigen::SparseMatrix<double>::InnerIterator it(mat, k); it; ++it) {
+      col_sum += it.value();
+      col_sq_sum += it.value() * it.value();
+    }
+    const double feature_mean = col_sum / nrows;
+    means[k] = feature_mean;
+    variances[k] = (col_sq_sum - (nrows * feature_mean * feature_mean)) / (nrows - 1);
+  }
+  return List::create(
+    _["mean"] = means,
+    _["variance"] = variances
+  );
+}
+
 // CLR-normalize sparse matrix by margin.
 // Margin 1 = rows, Margin 2 = columns.
 // For each vector v:

@@ -84,6 +84,17 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// SparseRowStats
+List SparseRowStats(Eigen::SparseMatrix<double> mat, bool display_progress);
+RcppExport SEXP _Seurat_SparseRowStats(SEXP matSEXP, SEXP display_progressSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::traits::input_parameter< Eigen::SparseMatrix<double> >::type mat(matSEXP);
+    Rcpp::traits::input_parameter< bool >::type display_progress(display_progressSEXP);
+    rcpp_result_gen = Rcpp::wrap(SparseRowStats(mat, display_progress));
+    return rcpp_result_gen;
+END_RCPP
+}
 // CLRNorm
 Eigen::SparseMatrix<double> CLRNorm(Eigen::SparseMatrix<double> data, int margin, bool display_progress);
 RcppExport SEXP _Seurat_CLRNorm(SEXP dataSEXP, SEXP marginSEXP, SEXP display_progressSEXP) {
@@ -434,6 +445,7 @@ static const R_CallMethodDef CallEntries[] = {
     {"_Seurat_RunUMISamplingPerCell", (DL_FUNC) &_Seurat_RunUMISamplingPerCell, 4},
     {"_Seurat_RowMergeMatrices", (DL_FUNC) &_Seurat_RowMergeMatrices, 5},
     {"_Seurat_LogNorm", (DL_FUNC) &_Seurat_LogNorm, 3},
+    {"_Seurat_SparseRowStats", (DL_FUNC) &_Seurat_SparseRowStats, 2},
     {"_Seurat_CLRNorm", (DL_FUNC) &_Seurat_CLRNorm, 3},
     {"_Seurat_RelativeCountsNorm", (DL_FUNC) &_Seurat_RelativeCountsNorm, 3},
     {"_Seurat_Standardize", (DL_FUNC) &_Seurat_Standardize, 2},

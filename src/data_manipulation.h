@@ -42,6 +42,7 @@ Eigen::MatrixXd FastCov(Eigen::MatrixXd mat, bool center);
 Eigen::MatrixXd FastCovMats(Eigen::MatrixXd mat1, Eigen::MatrixXd mat2, bool center);
 Eigen::MatrixXd FastRBind(Eigen::MatrixXd mat1, Eigen::MatrixXd mat2);
 Eigen::VectorXd FastExpMean(Eigen::MatrixXd mat, bool display_progress);
+List SparseRowStats(Eigen::SparseMatrix<double> mat, bool display_progress);
 Eigen::VectorXd FastRowMean(Eigen::MatrixXd mat, bool display_progress);
 Eigen::VectorXd FastLogVMR(Eigen::SparseMatrix<double> mat, bool display_progress);
 Eigen::VectorXd FastExpVar(Eigen::SparseMatrix<double> mat, bool display_progress);
